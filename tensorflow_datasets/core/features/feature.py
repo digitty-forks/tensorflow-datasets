@@ -765,7 +765,7 @@ class FeatureConnector(object, metaclass=abc.ABCMeta):
   def decode_example_np(
       self, example_data: type_utils.NpArrayOrScalar
   ) -> type_utils.NpArrayOrScalar | None:
-    """Encode the feature dict into NumPy-compatible input.
+    """Decode the example data into NumPy-compatible input.
 
     Args:
       example_data: Value to convert to NumPy.
@@ -973,7 +973,10 @@ class FeatureConnector(object, metaclass=abc.ABCMeta):
 
   def _additional_repr_info(self):
     """Override to return additional info to go into __repr__."""
-    return {}
+    additional_repr_info = {}
+    if description := self.doc.desc:
+      additional_repr_info['description'] = description
+    return additional_repr_info
 
   def __repr__(self):
     """Display the feature dictionary."""

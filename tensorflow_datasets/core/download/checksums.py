@@ -36,6 +36,10 @@ def _default_checksum_dirs() -> list[epath.Path]:
   ]
 
 
+def sha256(str_: str) -> str:
+  return hashlib.sha256(str_.encode()).hexdigest()
+
+
 @dataclasses.dataclass(eq=True)
 class UrlInfo:
   """Small wrapper around the url metadata (checksum, size).
@@ -216,6 +220,7 @@ def save_url_infos(
       f'{url_info.filename or ""}\n'
       for url, url_info in sorted(new_data.items())
   ]
+  path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(''.join(lines), encoding='UTF-8')
 
 
@@ -227,3 +232,19 @@ def _filenames_equal(
   return all(
       l.filename == r.filename for _, (l, r) in utils.zip_dict(left, right)
   )
+
+
+def validate_checksums_path(checksums_path: epath.PathLike):
+  """Validates the checksums path.
+
+  This function creates the file if it doesn't exist, and writes to it to make
+  sure the user has write access before downloading any files.
+
+  Args:
+    checksums_path: Path to the checksums file.
+  """
+  checksums_path = epath.Path(checksums_path)
+  if not checksums_path.exists():
+    checksums_path.touch()
+  else:
+    checksums_path.write_text(checksums_path.read_text())

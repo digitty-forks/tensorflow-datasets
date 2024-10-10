@@ -13,14 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for tensorflow_datasets.core.registered."""
-
 import abc
 import re
 from unittest import mock
 import pytest
 from tensorflow_datasets import testing
-from tensorflow_datasets.core import constants
 from tensorflow_datasets.core import load
 from tensorflow_datasets.core import registered
 from tensorflow_datasets.core import splits
@@ -28,6 +25,28 @@ from tensorflow_datasets.core import utils
 from tensorflow_datasets.core.utils import py_utils
 import tensorflow_datasets.public_api as tfds
 from tensorflow_datasets.testing.dummy_config_based_datasets.dummy_ds_1 import dummy_ds_1_dataset_builder
+
+
+class TestBuilderProvider(tfds.core.DatasetBuilderProvider):
+  """Test Builder provider."""
+
+  def __init__(
+      self,
+      name: str,
+      dataset_builder_cls: type[tfds.core.registered.RegisteredDataset],
+  ):
+    self._builder_cls_cache = {name: dataset_builder_cls}
+    self._available_datasets = [name]
+
+  def has_dataset(self, name: str) -> bool:
+    return name in self._available_datasets
+
+  def get_builder_cls(
+      self, name: str
+  ) -> type[tfds.core.registered.RegisteredDataset]:
+    if not self.has_dataset(name):
+      raise ValueError(f"Dataset {name} is not available!")
+    return self._builder_cls_cache[name]
 
 
 class EmptyDatasetBuilder(registered.RegisteredDataset):
@@ -242,6 +261,54 @@ class RegisteredTest(testing.TestCase):
     self.assertTrue(load.is_full_name("ds/1.0.2"))
     self.assertTrue(load.is_full_name("ds_with_number123/1.0.2"))
 
+  def test_add_dataset_provider_to_end(self):
+    """Adding same name dataset through dataset provider to the end of the list."""
+
+    class OriginalDataset(registered.RegisteredDataset):  # pylint: disable=unused-variable
+      pass
+
+    registered.add_dataset_builder_provider(
+        TestBuilderProvider("original_dataset", EmptyDatasetBuilder),
+        None,  # end of the list
+    )
+    builder_cls = registered.imported_builder_cls("original_dataset")
+    self.assertEqual(builder_cls, OriginalDataset)
+
+  def test_add_dataset_provider_to_start(self):
+    """Adding same name dataset through dataset provider to the start of the list."""
+
+    class MyDataset(registered.RegisteredDataset):  # pylint: disable=unused-variable
+      pass
+
+    registered.add_dataset_builder_provider(
+        TestBuilderProvider("my_dataset", EmptyDatasetBuilder),
+        0,  # start of the list
+    )
+    builder_cls = registered.imported_builder_cls("my_dataset")
+    self.assertEqual(builder_cls, EmptyDatasetBuilder)
+
+  def test_reset_dataset_builder_providers(self):
+    """Resetting dataset builder providers."""
+
+    class MyRegisteredDataset(registered.RegisteredDataset):  # pylint: disable=unused-variable
+      pass
+
+    registered.add_dataset_builder_provider(
+        TestBuilderProvider("my_registered_dataset", EmptyDatasetBuilder),
+        0,  # start of the list
+    )
+    builder_cls = registered.imported_builder_cls("my_registered_dataset")
+    self.assertEqual(builder_cls, EmptyDatasetBuilder)
+
+    registered.reset_dataset_builder_providers()
+
+    registered.add_dataset_builder_provider(
+        TestBuilderProvider("my_registered_dataset", EmptyDatasetBuilder),
+        None,  # end of the list
+    )
+    builder_cls = registered.imported_builder_cls("my_registered_dataset")
+    self.assertEqual(builder_cls, MyRegisteredDataset)
+
 
 def test_skip_regitration():
   """Test `skip_registration()`."""
@@ -326,14 +393,16 @@ def test_name_inferred_from_pkg_level3():
   assert ds_builder.name == "dummy_ds_2"
 
 
-class ConfigBasedBuildersTest(testing.TestCase):
+class SourceDirDatasetBuilderProviderTest(testing.TestCase):
 
-  def test__get_existing_dataset_packages(self):
-    ds_packages = registered._get_existing_dataset_packages(
+  def test_provider(self):
+    provider = registered.SourceDirDatasetBuilderProvider(
         "testing/dummy_config_based_datasets"
     )
-    self.assertEqual(set(ds_packages.keys()), {"dummy_ds_1", "dummy_ds_2"})
-    pkg_path, builder_module = ds_packages["dummy_ds_1"]
+    self.assertEqual(
+        set(provider.dataset_packages), {"dummy_ds_1", "dummy_ds_2"}
+    )
+    pkg_path, builder_module = provider.dataset_packages["dummy_ds_1"]
     self.assertEndsWith(
         str(pkg_path),
         "tensorflow_datasets/testing/dummy_config_based_datasets/dummy_ds_1",
@@ -343,10 +412,12 @@ class ConfigBasedBuildersTest(testing.TestCase):
         "tensorflow_datasets.testing.dummy_config_based_datasets.dummy_ds_1.dummy_ds_1_dataset_builder",
     )
 
-  @mock.patch.object(
-      constants, "DATASETS_TFDS_SRC_DIR", "testing/dummy_config_based_datasets"
-  )
   def test_imported_builder_cls(self):
+    registered.add_dataset_builder_provider(
+        registered.SourceDirDatasetBuilderProvider(
+            "testing/dummy_config_based_datasets"
+        )
+    )
     builder = registered.imported_builder_cls("dummy_ds_1")
     self.assertEqual(builder.name, "dummy_ds_1")
 

@@ -356,6 +356,7 @@ def _download_and_prepare(
       publish_dir=args.publish_dir,
       skip_if_published=args.skip_if_published,
       overwrite=args.overwrite,
+      beam_pipeline_options=args.beam_pipeline_options,
   )
 
 
@@ -367,7 +368,7 @@ def _make_download_config(
   # Load the download config
   manual_dir = args.manual_dir
   if args.add_name_to_manual_dir:
-    manual_dir = os.path.join(manual_dir, dataset_name)
+    manual_dir = manual_dir / dataset_name
 
   kwargs = {}
   if args.max_shard_size_mb:
@@ -384,7 +385,7 @@ def _make_download_config(
   if args.update_metadata_only:
     kwargs['download_mode'] = tfds.download.GenerateMode.UPDATE_DATASET_INFO
 
-  dl_config = tfds.download.DownloadConfig(
+  return tfds.download.DownloadConfig(
       extract_dir=args.extract_dir,
       manual_dir=manual_dir,
       max_examples_per_split=args.max_examples_per_split,
@@ -392,20 +393,6 @@ def _make_download_config(
       force_checksums_validation=args.force_checksums_validation,
       **kwargs,
   )
-
-  # Add Apache Beam options to download config
-  try:
-    import apache_beam as beam  # pylint: disable=g-import-not-at-top
-  except ImportError:
-    beam = None
-
-  if beam is not None:
-    if args.beam_pipeline_options:
-      dl_config.beam_options = beam.options.pipeline_options.PipelineOptions(
-          flags=[f'--{opt}' for opt in args.beam_pipeline_options.split(',')]
-      )
-
-  return dl_config
 
 
 def _get_config_name(

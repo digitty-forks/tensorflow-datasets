@@ -191,6 +191,11 @@ for ex in tfds.load('cifar10', split='train'):
 
 *   [`cardiotox`](cardiotox.md)
 
+### `Health`
+
+*   [`pneumonia_mnist`](pneumonia_mnist.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
+
 ### `Image`
 
 *   [`abstract_reasoning`](abstract_reasoning.md)
@@ -246,6 +251,8 @@ for ex in tfds.load('cifar10', split='train'):
 *   [`plant_leaves`](plant_leaves.md)
 *   [`plant_village`](plant_village.md)
 *   [`plantae_k`](plantae_k.md)
+*   [`pneumonia_mnist`](pneumonia_mnist.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
 *   [`quickdraw_bitmap`](quickdraw_bitmap.md)
 *   [`ref_coco`](ref_coco.md)
 *   [`resisc45`](resisc45.md)
@@ -328,6 +335,8 @@ for ex in tfds.load('cifar10', split='train'):
 *   [`oxford_iiit_pet`](oxford_iiit_pet.md)
 *   [`places365_small`](places365_small.md)
 *   [`plant_village`](plant_village.md)
+*   [`pneumonia_mnist`](pneumonia_mnist.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
 *   [`resisc45`](resisc45.md)
 *   [`siscore`](siscore.md)
 *   [`smallnorb`](smallnorb.md)
@@ -398,6 +407,8 @@ for ex in tfds.load('cifar10', split='train'):
 *   [`blimp`](blimp.md)
 *   [`databricks_dolly`](databricks_dolly.md)
 *   [`dices`](dices.md)
+*   [`dolma`](dolma.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
 *   [`e2e_cleaned`](e2e_cleaned.md)
 *   [`irc_disentanglement`](irc_disentanglement.md)
 *   [`lambada`](lambada.md)
@@ -433,6 +444,8 @@ for ex in tfds.load('cifar10', split='train'):
 *   [`bool_q`](bool_q.md)
 *   [`bot_adversarial_dialogue`](bot_adversarial_dialogue.md)
 *   [`dices`](dices.md)
+*   [`dolma`](dolma.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
 *   [`e2e_cleaned`](e2e_cleaned.md)
 *   [`imdb_reviews`](imdb_reviews.md)
 *   [`kitti`](kitti.md)
@@ -841,6 +854,8 @@ for ex in tfds.load('cifar10', split='train'):
 *   [`definite_pronoun_resolution`](definite_pronoun_resolution.md)
 *   [`dices`](dices.md)
 *   [`doc_nli`](doc_nli.md)
+*   [`dolma`](dolma.md)
+    <span class="material-icons" title="Available only in the tfds-nightly package">nights_stay</span>
 *   [`dolphin_number_word`](dolphin_number_word.md)
 *   [`drop`](drop.md)
 *   [`dsprites`](dsprites.md)

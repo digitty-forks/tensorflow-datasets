@@ -19,14 +19,14 @@ from __future__ import annotations
 
 import abc
 import collections
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 import dataclasses
 import functools
 import inspect
 import json
 import os
 import sys
-from typing import Any, ClassVar, Dict, Iterable, Iterator, List, Optional, Tuple, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, Union
 
 from absl import logging
 from etils import epy
@@ -294,6 +294,17 @@ class DatasetBuilder(registered.RegisteredDataset):
       self.info.read_from_directory(self._data_dir)
     else:  # Use the code version (do not restore data)
       self.info.initialize_from_bucket()
+    if self.BLOCKED_VERSIONS is not None:
+      if is_blocked := self.BLOCKED_VERSIONS.is_blocked(
+          version=self._version, config=self.builder_config_name
+      ):
+        default_msg = (
+            f"Dataset {self.name} is blocked at version {self._version} and"
+            f" config {self.builder_config_name}."
+        )
+        self.info.set_is_blocked(
+            is_blocked.blocked_msg if is_blocked.blocked_msg else default_msg
+        )
 
   @utils.classproperty
   @classmethod
@@ -342,10 +353,13 @@ class DatasetBuilder(registered.RegisteredDataset):
       return epath.Path(filepath)
 
   def __getstate__(self):
-    return self._original_state
+    # This needs to be of the same format as __dict__,
+    # to match with the pickling implementation of the derived classes.
+    return dict(_original_state=self._original_state)
 
   def __setstate__(self, state):
-    self.__init__(**state)
+    original_state = state["_original_state"]
+    self.__init__(**original_state)
 
   @functools.cached_property
   def canonical_version(self) -> utils.Version:
@@ -445,7 +459,7 @@ class DatasetBuilder(registered.RegisteredDataset):
     # * To save the checksums (in DownloadManager)
     if not cls.code_path:
       return None
-    new_path = cls.code_path.parent / "checksums.tsv"
+    new_path = cls.code_path.parent / constants.CHECKSUMS_FILENAME
     # Checksums of legacy datasets are located in a separate dir.
     legacy_path = utils.tfds_path() / "url_checksums" / f"{cls.name}.txt"
     if (
@@ -541,17 +555,18 @@ class DatasetBuilder(registered.RegisteredDataset):
     Returns:
       a reference to this instantiated builder.
     """
-    if self.builder_config:
-      config = self.builder_config.name
-    else:
-      config = None
     return naming.DatasetReference(
         dataset_name=self.name,
         namespace=namespace,
-        config=config,
+        config=self.builder_config_name,
         version=self.version,
         data_dir=self.data_dir_root,
     )
+
+  def get_file_spec(self, split: str) -> str:
+    """Returns the file spec of the split."""
+    split_info: splits_lib.SplitInfo = self.info.splits[split]
+    return split_info.file_spec(self.info.file_format)
 
   def is_prepared(self) -> bool:
     """Returns whether this dataset is already downloaded and prepared."""
@@ -559,19 +574,17 @@ class DatasetBuilder(registered.RegisteredDataset):
 
   def is_blocked(self) -> utils.IsBlocked:
     """Returns whether this builder (version, config) is blocked."""
-    config_name = self.builder_config.name if self.builder_config else None
     if blocked_versions := self.blocked_versions:
       return blocked_versions.is_blocked(
-          version=self.version, config=config_name
+          version=self.version, config=self.builder_config_name
       )
     return utils.IsBlocked(False)
 
   def assert_is_not_blocked(self) -> None:
     """Checks that the dataset is not blocked."""
-    config_name = self.builder_config.name if self.builder_config else None
     if blocked_versions := self.blocked_versions:
       is_blocked = blocked_versions.is_blocked(
-          version=self.version, config=config_name
+          version=self.version, config=self.builder_config_name
       )
       if is_blocked.result:
         raise utils.DatasetVariantBlockedError(is_blocked.blocked_msg)
@@ -794,6 +807,7 @@ class DatasetBuilder(registered.RegisteredDataset):
       split: Optional[Tree[splits_lib.SplitArg]] = None,
       *,
       decoders: Optional[TreeDict[decode.partial_decode.DecoderArg]] = None,
+      deserialize_method: decode.DeserializeMethod = decode.DeserializeMethod.DESERIALIZE_AND_DECODE,
   ) -> ListOrTreeOrElem[Sequence[Any]]:
     """Constructs an `ArrayRecordDataSource`.
 
@@ -807,6 +821,11 @@ class DatasetBuilder(registered.RegisteredDataset):
         customized feature keys need to be present. See [the
         guide](https://github.com/tensorflow/datasets/blob/master/docs/decode.md)
         for more info.
+      deserialize_method: Whether the read examples should be deserialized
+        and/or decoded. If not specified, it'll deserialize the data and decode
+        the features. Decoding is only supported if the examples are tf
+        examples. Note that if the deserialize_method method is other than
+        PARSE_AND_DECODE, then the `decoders` argument is ignored.
 
     Returns:
       `Sequence` if `split`,
@@ -861,13 +880,27 @@ class DatasetBuilder(registered.RegisteredDataset):
 
     # Create a dataset for each of the given splits
     def build_single_data_source(split: str) -> Sequence[Any]:
+      if info.file_format is None:
+        raise ValueError(
+            "Dataset info file format is not set! For random access, one of the"
+            f" following formats is required: {random_access_formats_msg}"
+        )
+
       match info.file_format:
         case file_adapters.FileFormat.ARRAY_RECORD:
           return array_record.ArrayRecordDataSource(
-              info, split=split, decoders=decoders
+              info,
+              split=split,
+              decoders=decoders,
+              deserialize_method=deserialize_method,
           )
         case file_adapters.FileFormat.PARQUET:
-          return parquet.ParquetDataSource(info, split=split, decoders=decoders)
+          return parquet.ParquetDataSource(
+              info,
+              split=split,
+              decoders=decoders,
+              deserialize_method=deserialize_method,
+          )
         case _:
           raise NotImplementedError(unsupported_format_msg)
 
@@ -1082,7 +1115,7 @@ class DatasetBuilder(registered.RegisteredDataset):
     # shuffling is enabled, as this would effectively disable shuffling.
     # An exception is for single shard (as shuffling is a no-op).
     # Another exception is if reshuffle is disabled (shuffling already cached)
-    num_shards = len(self.info.splits[split].file_instructions)
+    num_shards = self.info.splits[split].num_shards
     if (
         shuffle_files
         and
@@ -1095,75 +1128,24 @@ class DatasetBuilder(registered.RegisteredDataset):
     # If the dataset satisfy all the right conditions, activate autocaching.
     return True
 
-  def _relative_data_dir(self, with_version: bool = True) -> str:
-    """Relative path of this dataset in data_dir."""
-    builder_data_dir = self.name
-    builder_config = self._builder_config
-    if builder_config:
-      builder_data_dir = os.path.join(builder_data_dir, builder_config.name)
-    if not with_version:
-      return builder_data_dir
-
-    version_data_dir = os.path.join(builder_data_dir, str(self._version))
-    return version_data_dir
-
-  def _build_data_dir(self, given_data_dir: Optional[str]):
+  def _build_data_dir(self, given_data_dir: str | None) -> tuple[str, str]:
     """Return the data directory for the current version.
 
     Args:
-      given_data_dir: `Optional[str]`, root `data_dir` passed as `__init__`
-        argument.
+      given_data_dir: Root `data_dir` passed as `__init__` argument.
 
     Returns:
-      data_dir_root: `str`, The root dir containing all datasets, downloads,...
-      data_dir: `str`, The version data_dir
-        (e.g. `<data_dir_root>/<ds_name>/<config>/<version>`)
+      data_dir: Root directory containing all datasets, downloads,...
+      dataset_dir: Dataset data directory (e.g.
+        `<data_dir>/<ds_name>/<config>/<version>`)
     """
-    builder_dir = self._relative_data_dir(with_version=False)
-    version_dir = self._relative_data_dir(with_version=True)
-
-    default_data_dir = file_utils.get_default_data_dir(
-        given_data_dir=given_data_dir
+    data_dir, dataset_dir = file_utils.get_data_dir_and_dataset_dir(
+        given_data_dir=given_data_dir,
+        builder_name=self.name,
+        config_name=self.builder_config_name,
+        version=self.version,
     )
-    all_data_dirs = file_utils.list_data_dirs(
-        given_data_dir=given_data_dir, dataset=self.name
-    )
-
-    all_versions = set()
-    requested_version_dirs = {}
-    for data_dir_root in all_data_dirs:
-      # List all existing versions
-      full_builder_dir = os.path.join(data_dir_root, builder_dir)
-      data_dir_versions = set(utils.version.list_all_versions(full_builder_dir))
-      # Check for existence of the requested version
-      if self.version in data_dir_versions:
-        requested_version_dirs[data_dir_root] = os.path.join(
-            data_dir_root, version_dir
-        )
-      all_versions.update(data_dir_versions)
-
-    if len(requested_version_dirs) > 1:
-      raise ValueError(
-          "Dataset was found in more than one directory: {}. Please resolve "
-          "the ambiguity by explicitly specifying `data_dir=`."
-          "".format(requested_version_dirs.values())
-      )
-    elif len(requested_version_dirs) == 1:  # The dataset is found once
-      return next(iter(requested_version_dirs.items()))
-
-    # No dataset found, use default directory
-    data_dir = os.path.join(default_data_dir, version_dir)
-    if all_versions:
-      logging.warning(
-          (
-              "Found a different version of the requested dataset:\n"
-              "%s\n"
-              "Using %s instead."
-          ),
-          "\n".join(str(v) for v in sorted(all_versions)),
-          data_dir,
-      )
-    return default_data_dir, data_dir
+    return os.fspath(data_dir), os.fspath(dataset_dir)
 
   def _log_download_done(self) -> None:
     msg = (
@@ -1280,7 +1262,11 @@ class DatasetBuilder(registered.RegisteredDataset):
     if download_config.register_checksums:
       # Note: Error will be raised here if user try to record checksums
       # from a `zipapp`
-      register_checksums_path = utils.to_write_path(self._checksums_path)
+      try:
+        register_checksums_path = utils.to_write_path(self._checksums_path)
+        download.validate_checksums_path(register_checksums_path)
+      except Exception:  # pylint: disable=broad-except
+        raise
     else:
       register_checksums_path = None
 
@@ -1342,6 +1328,11 @@ class DatasetBuilder(registered.RegisteredDataset):
   def builder_config(self) -> Optional[Any]:
     """`tfds.core.BuilderConfig` for this builder."""
     return self._builder_config
+
+  @property
+  def builder_config_name(self) -> str | None:
+    """Name of the `tfds.core.BuilderConfig` for this builder."""
+    return self._builder_config.name if self._builder_config else None
 
   def _create_builder_config(
       self,
@@ -1415,6 +1406,17 @@ class DatasetBuilder(registered.RegisteredDataset):
           "Names in BUILDER_CONFIGS must not be duplicated. Got %s" % names
       )
     return config_dict
+
+  def _get_filename_template(
+      self, split_name: str
+  ) -> naming.ShardedFileTemplate:
+    """Returns a filename template for the given split."""
+    return naming.ShardedFileTemplate(
+        split=split_name,
+        dataset_name=self.name,
+        data_dir=self.data_path,
+        filetype_suffix=self.info.file_format.file_suffix,  # pytype: disable=attribute-error
+    )
 
 
 class FileReaderBuilder(DatasetBuilder):
@@ -1646,19 +1648,6 @@ class GeneratorBasedBuilder(FileReaderBuilder):
     """
     return writer_lib.ExampleWriter(file_format=self.info.file_format)
 
-  def _get_filename_template(
-      self, split_name: str
-  ) -> naming.ShardedFileTemplate:
-    """Returns a filename template for the given split."""
-    return naming.ShardedFileTemplate(
-        split=split_name,
-        dataset_name=self.name,
-        data_dir=self.data_path,
-        filetype_suffix=file_adapters.ADAPTER_FOR_FORMAT[
-            self.info.file_format
-        ].FILE_SUFFIX,
-    )
-
   def _generate_splits(
       self,
       dl_manager: download.DownloadManager,
@@ -1825,6 +1814,99 @@ class GeneratorBasedBuilder(FileReaderBuilder):
     )
 
 
+class ShardBasedBuilder(FileReaderBuilder):
+  """Base class for datasets with data generated shard by shard.
+
+  Like `GeneratorBasedBuilder`, this base class can be used to create datasets.
+  However, `ShardBasedBuilder` gives strict control over the number of shards
+  and what data ends up in what shard.
+
+  This is useful for datasets where you want to keep the same ordering as the
+  original data source, and/or where you want to keep the same sharding as the
+  original data source.
+
+  You have to implement the `_shard_iterators_per_split` method, which returns
+  a mapping from split name to a list of `ExampleGeneratorFn` functions that
+  return an example iterator. The signature of the function is `Callable[[],
+  Iterator[KeyExample]]` where `KeyExample` is a tuple of (key, example) where
+  key is a unique key for the example and example is a dict of features.
+
+  Note that a `ExampleGeneratorFn` can also be a class that implements a
+  `__call__` method that returns a `Iterator[KeyExample]`.
+
+  Also note that shuffling is not supported. Also, the following fields in
+  `DownloadConfig` are not supported:
+  - `ignore_duplicates`
+  - `max_examples_per_split`
+  - `shard_config`
+  """
+
+  def _download_and_prepare(
+      self,
+      dl_manager: download.DownloadManager,
+      download_config: download.DownloadConfig | None = None,
+  ) -> None:
+    download_config = download_config or download.DownloadConfig()
+
+    split_builder = split_builder_lib.SplitBuilder(
+        split_dict=self.info.splits,
+        features=self.info.features,
+        dataset_size=self.info.dataset_size,
+        beam_options=download_config.beam_options,
+        beam_runner=download_config.beam_runner,
+        example_writer=self._example_writer(),
+        # The following options are ignored by `ShardBasedBuilder`.
+        ignore_duplicates=None,
+        max_examples_per_split=None,
+        shard_config=None,
+    )
+
+    shard_iterators_per_split = self._shard_iterators_per_split(dl_manager)
+    split_info_futures = []
+    for split_name, example_gen_per_shard in shard_iterators_per_split.items():
+      logging.info("Generating split %s", split_name)
+      split_info_future = split_builder.submit_shard_based_generation(
+          split_name=split_name,
+          example_gen_per_shard=example_gen_per_shard,
+          filename_template=self._get_filename_template(split_name=split_name),
+      )
+      split_info_futures.append(split_info_future)
+
+    # Update the info object with the splits.
+    split_infos: list[splits_lib.SplitInfo] = [
+        future.result() for future in split_info_futures
+    ]
+    split_dict = splits_lib.SplitDict(split_infos)
+    self.info.set_splits(split_dict)
+
+  @abc.abstractmethod
+  @utils.docs.do_not_doc_in_subclasses
+  @utils.docs.doc_private
+  def _shard_iterators_per_split(
+      self, dl_manager: download.DownloadManager
+  ) -> Mapping[str, Sequence[split_builder_lib.ExampleGeneratorFn]]:
+    """Returns a mapping from split name to example generators per shard.
+
+    The example generators are functions with signature `Callable[[],
+    Iterator[KeyExample]]` that take no parameters and return
+    an iterator of tuples of (key, example). The order of the example generators
+    is the order in which the shards will be written.
+
+    Args:
+      dl_manager: `tfds.download.DownloadManager` used to download/extract the
+        data.
+    """
+    raise NotImplementedError()
+
+  def _example_writer(self) -> writer_lib.ExampleWriter:
+    """Returns an example writer.
+
+    If datasets should be written to a custom storage, e.g., a database, then
+    implement a custom `ExampleWriter` and inject it here.
+    """
+    return writer_lib.ExampleWriter(file_format=self.info.file_format)
+
+
 @utils.docs.deprecated
 class BeamBasedBuilder(GeneratorBasedBuilder):
   """Beam based Builder.
@@ -1895,16 +1977,14 @@ def _save_default_config_name(
   #   writing concurrently the same file
   # * Config file is overwritten each time a config is generated. If the
   #   default config is changed, this will be updated.
-  config_path = config_dir / "metadata.json"
+  config_path = config_dir / constants.METADATA_FILENAME
   with utils.incomplete_file(config_path) as tmp_config_path:
     tmp_config_path.write_text(json.dumps(data))
 
 
-def load_default_config_name(
-    common_dir: epath.Path,
-) -> Optional[str]:
+def load_default_config_name(builder_dir: epath.Path) -> str | None:
   """Load `builder_cls` metadata (common to all builder configs)."""
-  config_path = epath.Path(common_dir) / ".config/metadata.json"
+  config_path = builder_dir / ".config" / constants.METADATA_FILENAME
   if not config_path.exists():
     return None
   data = json.loads(config_path.read_text())

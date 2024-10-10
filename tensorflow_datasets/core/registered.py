@@ -15,6 +15,8 @@
 
 """Access registered datasets."""
 
+from __future__ import annotations
+
 import abc
 import collections
 from collections.abc import Iterator
@@ -24,7 +26,7 @@ import importlib
 import inspect
 import os.path
 import time
-from typing import ClassVar, Type
+from typing import ClassVar, Protocol, Type
 
 from absl import logging
 from etils import epath
@@ -37,11 +39,11 @@ from tensorflow_datasets.core.utils import py_utils
 from tensorflow_datasets.core.utils import resource_utils
 
 # Internal registry containing <str registered_name, DatasetBuilder subclass>
-_DATASET_REGISTRY = {}
+_DATASET_REGISTRY: dict[str, Type[RegisteredDataset]] = {}
 
 # Internal registry containing:
 # <str snake_cased_name, abstract DatasetBuilder subclass>
-_ABSTRACT_DATASET_REGISTRY = {}
+_ABSTRACT_DATASET_REGISTRY: dict[str, Type[RegisteredDataset]] = {}
 
 # Keep track of dict[str (module name), list[DatasetBuilder]]
 # This is directly accessed by `tfds.community.builder_cls_from_module` when
@@ -289,6 +291,121 @@ class RegisteredDataset(abc.ABC):
       _DATASET_REGISTRY[cls.name] = cls
 
 
+class DatasetBuilderProvider(Protocol):
+
+  def has_dataset(self, name: str) -> bool:
+    ...
+
+  def get_builder_cls(self, name: str) -> Type[RegisteredDataset]:
+    ...
+
+
+class LegacyDatasetBuilderProvider(DatasetBuilderProvider):
+  """Provider of dataset builders that are defined in the legacy codebase."""
+
+  def has_dataset(self, name: str) -> bool:
+    if name not in _DATASET_REGISTRY:
+      # Dataset not found in the registry, try to import legacy builders.
+      # Dataset builders are imported lazily to avoid slowing down the startup
+      # of the binary.
+      _import_legacy_builders()
+    return name in _DATASET_REGISTRY
+
+  def get_builder_cls(self, name: str) -> Type[RegisteredDataset]:
+    builder_cls = _DATASET_REGISTRY[name]
+    if not _is_builder_available(builder_cls):
+      available_types = visibility.get_availables()
+      msg = f'Dataset {name} is not available. Only: {available_types}'
+      raise PermissionError(msg)
+    return builder_cls
+
+
+class SourceDirDatasetBuilderProvider(DatasetBuilderProvider):
+  """Provider of dataset builders that are defined in the given source code folder."""
+
+  def __init__(self, datasets_dir: str):
+    self._datasets_dir = datasets_dir
+    self._registry: dict[str, Type[RegisteredDataset]] = {}
+
+  @functools.cached_property
+  def dataset_packages(self) -> dict[str, tuple[epath.Path, str]]:
+    """Returns existing datasets.
+
+    Returns:
+      {ds_name: (pkg_path, builder_module)}.
+      For example: {'mnist': ('/lib/tensorflow_datasets/datasets/mnist',
+                              'tensorflow_datasets.datasets.mnist.builder')}
+    """
+    datasets = {}
+    datasets_dir_path = resource_utils.tfds_path(self._datasets_dir)
+    if not datasets_dir_path.exists():
+      return datasets
+    ds_dir_pkg = '.'.join(
+        ['tensorflow_datasets'] + self._datasets_dir.split(os.path.sep)
+    )
+    for child in datasets_dir_path.iterdir():
+      # Except for a few exceptions, all children of datasets/ directory are
+      # packages of datasets, no needs to check child is a directory and
+      # contains a `builder.py` module.
+      exceptions = [
+          '__init__.py',
+      ]
+      if child.name not in exceptions:
+        pkg_path = epath.Path(datasets_dir_path) / child.name
+        builder_module = (
+            f'{ds_dir_pkg}.{child.name}.{child.name}{_BUILDER_MODULE_SUFFIX}'
+        )
+        datasets[child.name] = (pkg_path, builder_module)
+    return datasets
+
+  def has_dataset(self, name: str) -> bool:
+    return name in self.dataset_packages
+
+  def get_builder_cls(self, name: str) -> Type[RegisteredDataset]:
+    if name in self._registry:
+      return self._registry[name]
+    pkg_dir_path, builder_module = self.dataset_packages[name]
+    cls = importlib.import_module(builder_module).Builder
+    cls.pkg_dir_path = pkg_dir_path
+    self._registry[name] = cls
+    return cls
+
+
+def _get_inital_providers() -> list[DatasetBuilderProvider]:
+  return [
+      SourceDirDatasetBuilderProvider(constants.DATASETS_TFDS_SRC_DIR),
+      LegacyDatasetBuilderProvider(),
+  ]
+
+
+_DATASET_PROVIDER_REGISTRY: list[DatasetBuilderProvider] = (
+    _get_inital_providers()
+)
+
+
+def add_dataset_builder_provider(
+    provider: DatasetBuilderProvider,
+    index: int | None = None,
+) -> None:
+  """Adds a dataset builder provider to the global registry.
+
+  Args:
+    provider: The provider to add.
+    index: The index at which to insert the provider. If `None`, the provider is
+      appended to the end of the registry.
+  """
+  if index is not None:
+    _DATASET_PROVIDER_REGISTRY.insert(index, provider)
+  else:
+    _DATASET_PROVIDER_REGISTRY.append(provider)
+
+
+def reset_dataset_builder_providers() -> None:
+  """Resets the list of dataset builder providers to remove added providers."""
+  global _DATASET_PROVIDER_REGISTRY
+  _DATASET_PROVIDER_REGISTRY = _get_inital_providers()
+
+
 def _is_builder_available(builder_cls: Type[RegisteredDataset]) -> bool:
   """Returns `True` is the builder is available."""
   return visibility.DatasetType.TFDS_PUBLIC.is_available()
@@ -346,14 +463,9 @@ def _get_existing_dataset_packages(
 
 def imported_builder_cls(name: str) -> Type[RegisteredDataset]:
   """Returns the Registered dataset class."""
-  existing_ds_pkgs = _get_existing_dataset_packages(
-      constants.DATASETS_TFDS_SRC_DIR
-  )
-  if name in existing_ds_pkgs:
-    pkg_dir_path, builder_module = existing_ds_pkgs[name]
-    cls = importlib.import_module(builder_module).Builder
-    cls.pkg_dir_path = pkg_dir_path
-    return cls
+  for dataset_builder_provider in _DATASET_PROVIDER_REGISTRY:
+    if dataset_builder_provider.has_dataset(name):
+      return dataset_builder_provider.get_builder_cls(name)
 
   if name in _ABSTRACT_DATASET_REGISTRY:
     # Will raise TypeError: Can't instantiate abstract class X with abstract
@@ -363,17 +475,4 @@ def imported_builder_cls(name: str) -> Type[RegisteredDataset]:
     # abstract methods.
     raise AssertionError(f'Dataset {name} is an abstract class.')
 
-  if name not in _DATASET_REGISTRY:
-    # Dataset not found in the registry, try to import legacy builders.
-    # Dataset builders are imported lazily to avoid slowing down the startup
-    # of the binary.
-    _import_legacy_builders()
-    if name not in _DATASET_REGISTRY:
-      raise DatasetNotFoundError(f'Dataset {name} not found.')
-
-  builder_cls = _DATASET_REGISTRY[name]
-  if not _is_builder_available(builder_cls):
-    available_types = visibility.get_availables()
-    msg = f'Dataset {name} is not available. Only: {available_types}'
-    raise PermissionError(msg)
-  return builder_cls  # pytype: disable=bad-return-type
+  raise DatasetNotFoundError(f'Dataset {name} not found.')

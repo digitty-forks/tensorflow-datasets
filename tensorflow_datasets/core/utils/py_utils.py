@@ -354,23 +354,17 @@ def incomplete_files(
 
 def is_incomplete_file(path: epath.Path) -> bool:
   """Returns whether the given filename suggests that it's incomplete."""
-  return bool(
-      re.search(
-          rf'^{re.escape(constants.INCOMPLETE_PREFIX)}[0-9a-fA-F]{{32}}\..+$',
-          path.name,
-      )
-  )
+  regex = rf'{re.escape(constants.INCOMPLETE_PREFIX)}[0-9a-fA-F]{{32}}\..+'
+  return bool(re.search(rf'^{regex}$', path.name))
 
 
 @contextlib.contextmanager
 def atomic_write(path: epath.PathLike, mode: str):
   """Writes to path atomically, by writing to temp file and renaming it."""
-  path = epath.Path(path)
   tmp_path = _tmp_file_name(path)
   with tmp_path.open(mode=mode) as file_:
     yield file_
-  path.unlink(missing_ok=True)
-  tmp_path.rename(path)
+  tmp_path.replace(path)
 
 
 def reraise(
