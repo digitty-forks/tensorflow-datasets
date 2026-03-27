@@ -131,6 +131,8 @@ def _pydub_decode_audio(
   fobj = io.BytesIO(audio_tensor.numpy())
   if file_format_tensor.has_value():
     file_format = file_format_tensor.get_value().numpy()
+    if isinstance(file_format, bytes):
+      file_format = file_format.decode('utf-8')
   else:
     file_format = None
   return _pydub_load_audio(fobj, file_format, channels)
