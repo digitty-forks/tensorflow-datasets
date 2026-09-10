@@ -173,7 +173,7 @@ class RluLocomotion(rlu_common.RLUBuilder):
     return tfds.features.FeaturesDict({
         'steps': tfds.features.Dataset({  # pyrefly: ignore[bad-argument-type]
             'observation': {
-                'walker': walker_features,
+                'walker': walker_features,  # pyrefly: ignore[bad-assignment]
             },
             'action': action_features,
             'reward': np.float32,

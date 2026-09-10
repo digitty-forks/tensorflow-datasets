@@ -303,7 +303,7 @@ class RobomimicBuilder(tfds.core.GeneratorBasedBuilder, skip_registration=True):
         'episode_id': np.str_,
         'steps': tfds.features.Dataset({  # pyrefly: ignore[bad-argument-type]
             'action': tensor_feature(action_size),  # pyrefly: ignore[bad-argument-type]
-            'observation': observation,
+            'observation': observation,  # pyrefly: ignore[bad-assignment]
             'reward': np.float64,
             'is_first': np.bool_,
             'is_last': np.bool_,

@@ -430,7 +430,7 @@ class CroissantBuilder(
           for split in split_reference.split_record_set.data  # pyrefly: ignore[not-iterable]
       }
     else:
-      return {'default': self._generate_examples(filters=self._filters)}  # pyrefly: ignore[bad-argument-type, bad-return]
+      return {'default': self._generate_examples(filters=self._filters)}  # pyrefly: ignore[bad-argument-type, bad-assignment, bad-return]
 
   def _generate_examples(
       self,

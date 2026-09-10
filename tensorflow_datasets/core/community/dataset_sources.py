@@ -57,7 +57,7 @@ class DatasetSource:
     else:
       return {  # pyrefly: ignore[bad-return]
           'root_path': os.fspath(self.root_path),
-          'filenames': self.filenames,
+          'filenames': self.filenames,  # pyrefly: ignore[bad-assignment]
       }
 
 

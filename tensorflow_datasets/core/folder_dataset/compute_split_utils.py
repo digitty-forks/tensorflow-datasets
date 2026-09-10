@@ -233,7 +233,7 @@ def _compute_split_statistics(
           functools.partial(
               _process_shard,
               data_dir=filename_template.data_dir,
-              adapter=adapter,
+              adapter=adapter,  # pyrefly: ignore[bad-argument-type]
           ),
           split_files,
           progress_bar=True,

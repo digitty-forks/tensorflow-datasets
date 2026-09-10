@@ -290,8 +290,8 @@ def _generate_images_and_annotations(tf_record_file):
 
       camera_name = open_dataset.CameraName.Name.Name(frame_image.name)
       image_and_annotation["camera_" + camera_name] = {  # pyrefly: ignore[unsupported-operation]
-          "image": frame_image.image,
-          "labels": labels,
+          "image": frame_image.image,  # pyrefly: ignore[bad-assignment]
+          "labels": labels,  # pyrefly: ignore[bad-assignment]
       }
 
     yield image_and_annotation

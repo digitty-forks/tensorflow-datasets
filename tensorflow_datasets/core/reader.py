@@ -484,7 +484,7 @@ class Reader:
     # Eventually add the `tfds_id` after the decoding
     if read_config and read_config.add_tfds_id:
       parse_and_decode = functools.partial(
-          _decode_with_id, decode_fn=parse_and_decode
+          _decode_with_id, decode_fn=parse_and_decode  # pyrefly: ignore[bad-argument-type]
       )
 
     ds = ds.map(
